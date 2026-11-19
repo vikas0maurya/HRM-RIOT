@@ -1,0 +1,20 @@
+{
+  "name": "hr-portal",
+  "version": "1.0.0",
+  "description": "HR portal: attendance, leave, payroll, PF, resignations",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "better-sqlite3": "^13.1.1",
+    "express": "^5.3.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "allowScripts": {
+    "better-sqlite3@13.1.1": true
+  }
+}
