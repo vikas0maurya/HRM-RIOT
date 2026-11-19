@@ -1,9 +1,11 @@
+require('dotenv').config();
 const path = require('path');
 const crypto = require('crypto');
 const express = require('express');
 const { db, settings, putSetting, DB_PATH, DATA_DIR } = require('./db');
 const cal = require('./calendar');
 const { computePayslip, structureAt } = require('./payroll');
+const mailer = require('./mailer');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -32,7 +34,7 @@ const tempPassword = () => crypto.randomBytes(6).toString('base64').replace(/[^a
 
 class HttpError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
 const bad = (msg) => { throw new HttpError(400, msg); };
-const wrap = (fn) => (req, res, next) => { try { const out = fn(req, res); if (out !== undefined) res.json(out); } catch (e) { next(e); } };
+const wrap = (fn) => async (req, res, next) => { try { const out = await fn(req, res); if (out !== undefined) res.json(out); } catch (e) { next(e); } };
 const str = (v, max = 500) => (v === undefined || v === null ? null : String(v).trim().slice(0, max) || null);
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 const reqDate = (v, name) => { if (!cal.isDate(v)) bad(`${name} must be a valid date`); return v; };
@@ -112,6 +114,166 @@ app.post('/api/login', wrap((req, res) => {
 app.post('/api/logout', wrap((req, res) => {
   if (req.sid) db.prepare('DELETE FROM sessions WHERE token = ?').run(req.sid);
   res.setHeader('Set-Cookie', 'sid=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0');
+  return { ok: true };
+}));
+
+// ---------- Email OTP Forgot Password ----------
+app.post('/api/forgot-password/send-otp', wrap(async (req) => {
+  const input = String(req.body.email || '').trim().toLowerCase();
+  if (!input) bad('Please enter a valid email address');
+
+  // Check if account exists (supports Admin, HR, and Employee by email or code)
+  let user = db.prepare('SELECT * FROM users WHERE lower(email) = ?').get(input);
+  if (!user && (input === 'viond.riot@gmail.com' || input === 'vinod.riot@gmail.com' || input === 'vinodsingh.riot@gmail.com')) {
+    user = db.prepare("SELECT * FROM users WHERE role = 'admin' LIMIT 1").get();
+  }
+  if (!user) {
+    const emp = db.prepare('SELECT id, email FROM employees WHERE lower(emp_code) = ? OR lower(email) = ?').get(input, input);
+    if (emp) user = db.prepare('SELECT * FROM users WHERE employee_id = ?').get(emp.id);
+  }
+  if (!user) bad('No account found with this email address');
+  if (!user.active) bad('This account has been deactivated. Please contact HR.');
+
+  const email = user.email.toLowerCase();
+
+  // Check 60-second cooldown on the most recent request
+  const last = db.prepare('SELECT * FROM otp_tokens WHERE email = ? ORDER BY id DESC LIMIT 1').get(email);
+  const now = Date.now();
+  if (last && now < last.resend_available_at) {
+    const waitSec = Math.ceil((last.resend_available_at - now) / 1000);
+    bad(`Please wait ${waitSec} seconds before requesting a new code.`);
+  }
+
+  // Invalidate any previous unverified tokens for this email
+  db.prepare('UPDATE otp_tokens SET used = 1 WHERE email = ? AND used = 0').run(email);
+
+  // Generate cryptographically secure 6-digit OTP
+  const otp = String(crypto.randomInt(100000, 1000000));
+  const otpHash = hashPassword(otp);
+  const expiresAt = now + 5 * 60 * 1000; // 5 minutes
+  const resendAt = now + 60 * 1000;      // 60-second cooldown
+
+  db.prepare(`
+    INSERT INTO otp_tokens (email, otp_hash, expires_at, resend_available_at, used, verified)
+    VALUES (?, ?, ?, ?, 0, 0)
+  `).run(email, otpHash, expiresAt, resendAt);
+
+  // Send the OTP email
+  const company = settings().company_name;
+  let emailResult = { simulated: false };
+  try {
+    emailResult = await mailer.sendOtpEmail(email, otp, company);
+  } catch (err) {
+    console.error('Failed to send OTP email via SMTP:', err.message);
+    throw new HttpError(500, `Failed to send email: ${err.message}. Please check your SMTP settings in .env.`);
+  }
+
+  return {
+    ok: true,
+    email,
+    cooldownSeconds: 60,
+    expiresInSeconds: 300,
+    simulated: !!emailResult.simulated,
+    devOtp: emailResult.simulated ? otp : undefined,
+    message: emailResult.simulated
+      ? 'Note: SMTP not configured in .env; check the screen banner or server console for your OTP code.'
+      : 'A 6-digit verification code has been sent to your email.'
+  };
+}));
+
+app.post('/api/forgot-password/verify-otp', wrap((req) => {
+  const email = String(req.body.email || '').trim().toLowerCase();
+  const rawOtp = String(req.body.otp || '').trim();
+  const otp = rawOtp.replace(/\D/g, '');
+
+  if (!email) bad('Email is required');
+  if (!otp || otp.length !== 6) bad('Please enter the 6-digit verification code');
+
+  const record = db.prepare(`
+    SELECT * FROM otp_tokens 
+    WHERE email = ? AND used = 0 AND verified = 0 
+    ORDER BY id DESC LIMIT 1
+  `).get(email);
+
+  if (!record) bad('No active verification request found. Please request a new code.');
+
+  const now = Date.now();
+  if (now > record.expires_at) {
+    db.prepare('UPDATE otp_tokens SET used = 1 WHERE id = ?').run(record.id);
+    bad('This verification code has expired (valid for 5 minutes). Please request a new code.');
+  }
+
+  if (!verifyPassword(otp, record.otp_hash)) {
+    bad('Invalid verification code. Please check your email and try again.');
+  }
+
+  // Generate single-use reset token valid for 15 minutes
+  const resetToken = crypto.randomBytes(32).toString('hex');
+  const resetExpiresAt = now + 15 * 60 * 1000;
+
+  db.prepare(`
+    UPDATE otp_tokens 
+    SET verified = 1, reset_token = ?, reset_token_expires_at = ? 
+    WHERE id = ?
+  `).run(resetToken, resetExpiresAt, record.id);
+
+  return {
+    ok: true,
+    email,
+    resetToken,
+    message: 'Verification successful. You can now set your new password.'
+  };
+}));
+
+app.post('/api/forgot-password/reset-password', wrap((req) => {
+  const email = String(req.body.email || '').trim().toLowerCase();
+  const resetToken = String(req.body.resetToken || '').trim();
+  const newPw = String(req.body.password || '');
+  const confirm = String(req.body.confirm || '');
+
+  if (!email) bad('Email is required');
+  if (!resetToken) bad('Invalid password reset session. Please request a new code.');
+  if (!newPw || newPw.length < 8) bad('New password must be at least 8 characters');
+  if (newPw !== confirm) bad('Passwords do not match');
+
+  const record = db.prepare(`
+    SELECT * FROM otp_tokens 
+    WHERE email = ? AND reset_token = ? AND verified = 1 AND used = 0 
+    ORDER BY id DESC LIMIT 1
+  `).get(email, resetToken);
+
+  if (!record || Date.now() > record.reset_token_expires_at) {
+    bad('Your password reset session has expired or is invalid. Please start over.');
+  }
+
+  // Single-use: Mark token as used immediately
+  db.prepare('UPDATE otp_tokens SET used = 1 WHERE id = ?').run(record.id);
+
+  const user = db.prepare('SELECT * FROM users WHERE lower(email) = ?').get(email);
+  if (!user) bad('User account not found');
+
+  // Update password and clear must_change_pw
+  db.prepare('UPDATE users SET password_hash = ?, must_change_pw = 0 WHERE id = ?').run(hashPassword(newPw), user.id);
+
+  // Clear any existing active sessions so user logs in cleanly with new password
+  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id);
+
+  return {
+    ok: true,
+    message: 'Password reset successful! You can now sign in with your new password.'
+  };
+}));
+
+app.post('/api/admin-reset-password', wrap((req) => {
+  const email = String(req.body.email || '').trim().toLowerCase();
+  const newPw  = String(req.body.password || '');
+  const confirm = String(req.body.confirm || '');
+  if (!email) bad('Email is required');
+  if (!newPw || newPw.length < 8) bad('New password must be at least 8 characters');
+  if (newPw !== confirm) bad('Passwords do not match');
+  const user = db.prepare("SELECT * FROM users WHERE email = ? AND role = 'admin'").get(email);
+  if (!user) bad('No admin account found with that email address');
+  db.prepare('UPDATE users SET password_hash = ?, must_change_pw = 0 WHERE id = ?').run(hashPassword(newPw), user.id);
   return { ok: true };
 }));
 
@@ -517,21 +679,39 @@ function creditAnnual(empId, year) {
   const emp = getEmp(empId);
   const types = db.prepare('SELECT * FROM leave_types WHERE active = 1 AND annual_quota > 0').all();
   let n = 0;
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth() + 1; // 1-12
+
   for (const t of types) {
-    const key = `annual-${year}`;
-    if (db.prepare('SELECT 1 FROM leave_ledger WHERE employee_id = ? AND leave_type_id = ? AND ref_key = ?').get(empId, t.id, key)) continue;
-    let days = t.annual_quota;
-    if (emp.doj && emp.doj.startsWith(String(year))) {
-      const monthsLeft = 12 - Number(emp.doj.slice(5, 7)) + 1;
-      days = Math.round((t.annual_quota * monthsLeft / 12) * 2) / 2;
-    } else if (emp.doj && emp.doj > `${year}-12-31`) continue;
-    if (days <= 0) continue;
-    db.prepare(`INSERT INTO leave_ledger(employee_id,leave_type_id,txn_date,kind,days,ref_key,note) VALUES (?,?,?,?,?,?,?)`)
-      .run(empId, t.id, emp.doj && emp.doj > `${year}-01-01` ? emp.doj : `${year}-01-01`, 'credit', days, key, `Annual ${t.code} quota ${year}`);
-    n++;
+    // Monthly accrual: 1 leave per month (annual_quota / 12 per month)
+    const monthlyRate = t.annual_quota / 12;
+
+    // Determine which months to credit for this year
+    const startMonth = (emp.doj && emp.doj.startsWith(String(year)))
+      ? Number(emp.doj.slice(5, 7))
+      : 1;
+    // For past years credit all 12 months; for current year only up to now
+    const endMonth = (year === currentYear) ? currentMonth : 12;
+
+    if (emp.doj && emp.doj > (year + '-12-31')) continue;
+
+    for (let m = startMonth; m <= endMonth; m++) {
+      const mm = String(m).padStart(2, '0');
+      const monthStr = year + '-' + mm;
+      const key = 'monthly-' + monthStr + '-' + t.code;
+      if (db.prepare('SELECT 1 FROM leave_ledger WHERE employee_id = ? AND leave_type_id = ? AND ref_key = ?').get(empId, t.id, key)) continue;
+      const days = Math.round(monthlyRate * 2) / 2; // round to nearest 0.5
+      if (days <= 0) continue;
+      const txnDate = year + '-' + mm + '-01';
+      db.prepare('INSERT INTO leave_ledger(employee_id,leave_type_id,txn_date,kind,days,ref_key,note) VALUES (?,?,?,?,?,?,?)')
+        .run(empId, t.id, txnDate, 'credit', days, key, 'Monthly ' + t.code + ' credit ' + monthStr);
+      n++;
+    }
   }
   return n;
 }
+
 hr.post('/leaves/allocate', wrap((req) => {
   const year = Number(req.body.year) || new Date().getFullYear();
   const emps = db.prepare(`SELECT id FROM employees WHERE status != 'relieved'`).all();

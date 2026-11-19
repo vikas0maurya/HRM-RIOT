@@ -114,6 +114,8 @@ window.addEventListener('hashchange', render);
 
 async function render() {
   const app = $('#app');
+  // Allow forgot-password page without being logged in
+  if (parseHash().parts[0] === 'forgot-password') { renderForgotPw(app); return; }
   if (!state.me) {
     try { state.me = await GET('/api/me'); } catch { state.me = null; }
   }
@@ -162,7 +164,7 @@ function renderLogin(app, company) {
     <div class="field"><label>Email or employee code</label><input name="login" autocomplete="username" required></div>
     <div class="field"><label>Password</label><input name="password" type="password" autocomplete="current-password" required></div>
     <button class="btn primary" style="width:100%;justify-content:center" type="submit">Sign in</button>
-    <p class="hint">Forgot your password? Ask HR to reset it.</p></form></div>`;
+    <p class="hint"><a href="#/forgot-password" style="color:var(--brand);text-decoration:none">Forgot your password?</a></p></form></div>`;
   onSubmit($('#f'), async (d) => { await POST('/api/login', d); state.me = null; render(); });
 }
 function renderSetup(app) {
@@ -184,6 +186,243 @@ function renderForcePw(app) {
     if (d.next !== d.again) throw new Error('Passwords do not match');
     await POST('/api/change-password', d); toast('Password updated'); state.me = null; render();
   });
+}
+
+let forgotPwState = {
+  step: 'email', // 'email' | 'otp' | 'password' | 'success'
+  email: '',
+  resetToken: '',
+  cooldown: 0,
+  timerId: null,
+  devOtp: null,
+};
+
+function renderForgotPw(el) {
+  function clearTimer() {
+    if (forgotPwState.timerId) {
+      clearInterval(forgotPwState.timerId);
+      forgotPwState.timerId = null;
+    }
+  }
+
+  function startCooldown(seconds = 60) {
+    clearTimer();
+    forgotPwState.cooldown = seconds;
+    forgotPwState.timerId = setInterval(() => {
+      forgotPwState.cooldown--;
+      if (forgotPwState.cooldown <= 0) {
+        clearTimer();
+        forgotPwState.cooldown = 0;
+      }
+      updateResendButton();
+    }, 1000);
+  }
+
+  function updateResendButton() {
+    const btn = $('#btn-resend', el);
+    if (!btn) return;
+    if (forgotPwState.cooldown > 0) {
+      btn.disabled = true;
+      btn.textContent = `Resend code in ${forgotPwState.cooldown}s`;
+    } else {
+      btn.disabled = false;
+      btn.textContent = 'Resend Verification Code';
+    }
+  }
+
+  function renderView() {
+    clearTimer();
+
+    if (forgotPwState.step === 'email') {
+      el.innerHTML = `<div class="auth">
+        <form class="card" id="f-email">
+          <h1>Forgot Password</h1>
+          <p class="muted" style="margin-top:0">Enter your registered email address. We will send you a 6-digit verification code to reset your password.</p>
+          <div class="field">
+            <label>Registered Email</label>
+            <input name="email" type="email" autocomplete="email" placeholder="e.g. name@company.com" required value="${esc(forgotPwState.email)}">
+          </div>
+          <button class="btn primary" style="width:100%;justify-content:center" type="submit" id="btn-send">
+            Send Verification Code
+          </button>
+          <p class="hint" style="text-align:center;margin-top:16px">
+            <a href="#/" style="color:var(--brand);text-decoration:none">← Back to Sign In</a>
+          </p>
+        </form>
+      </div>`;
+
+      const input = $('input[name=email]', el);
+      if (input) setTimeout(() => input.focus(), 50);
+
+      onSubmit($('#f-email'), async (d) => {
+        const email = String(d.email || '').trim().toLowerCase();
+        if (!email) throw new Error('Please enter your email address');
+        const res = await POST('/api/forgot-password/send-otp', { email });
+        forgotPwState.email = email;
+        forgotPwState.step = 'otp';
+        forgotPwState.devOtp = res.devOtp || null;
+        toast(res.message || 'Verification code sent to your email');
+        renderView();
+        startCooldown(res.cooldownSeconds || 60);
+      });
+      return;
+    }
+
+    if (forgotPwState.step === 'otp') {
+      el.innerHTML = `<div class="auth">
+        <form class="card" id="f-otp">
+          <h1>Verify Code</h1>
+          <p class="muted" style="margin-top:0">We sent a 6-digit code to <strong>${esc(forgotPwState.email)}</strong></p>
+          ${forgotPwState.devOtp ? `
+            <div class="note warn" style="margin-bottom:14px;line-height:1.45;">
+              <strong>⚠️ SMTP Credentials Not Configured:</strong><br>
+              Real emails cannot be sent until you add your Gmail credentials to the <code>.env</code> file.<br>
+              <div style="margin-top:6px;padding:6px 10px;background:#fff;border-radius:6px;border:1px solid #fedf89;display:inline-block;">
+                Testing code: <strong style="font-family:monospace;letter-spacing:2px;font-size:16px;color:#b54708;">${esc(forgotPwState.devOtp)}</strong>
+              </div>
+            </div>
+          ` : `
+            <div class="note" style="margin-bottom:14px;display:flex;align-items:center;gap:8px">
+              <span style="font-size:16px">⏱</span>
+              <span>Code expires in <strong>5 minutes</strong> &bull; Single-use only</span>
+            </div>
+          `}
+          <div class="field">
+            <label>6-Digit Verification Code</label>
+            <input name="otp" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6"
+                   placeholder="123456" autocomplete="one-time-code" required
+                   style="font-size:24px;letter-spacing:8px;text-align:center;font-weight:700;font-family:monospace;padding:10px;">
+            <div class="hint" style="text-align:center">Enter the 6 numbers from your email</div>
+          </div>
+          <button class="btn primary" style="width:100%;justify-content:center;margin-top:6px" type="submit" id="btn-verify">
+            Verify Code
+          </button>
+          <div style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px">
+            <button type="button" class="btn" id="btn-resend" style="width:100%;justify-content:center" ${forgotPwState.cooldown > 0 ? 'disabled' : ''}>
+              ${forgotPwState.cooldown > 0 ? `Resend code in ${forgotPwState.cooldown}s` : 'Resend Verification Code'}
+            </button>
+          </div>
+          <p class="hint" style="text-align:center;margin-top:14px">
+            <a href="#" id="link-change" style="color:var(--muted);text-decoration:none">Use a different email</a>
+            &nbsp;&bull;&nbsp;
+            <a href="#/" style="color:var(--brand);text-decoration:none">Back to Sign In</a>
+          </p>
+        </form>
+      </div>`;
+
+      const otpInput = $('input[name=otp]', el);
+      if (otpInput) setTimeout(() => otpInput.focus(), 50);
+
+      if (forgotPwState.cooldown > 0) {
+        startCooldown(forgotPwState.cooldown);
+      }
+
+      const resendBtn = $('#btn-resend', el);
+      if (resendBtn) {
+        resendBtn.onclick = async () => {
+          if (forgotPwState.cooldown > 0) return;
+          resendBtn.disabled = true;
+          try {
+            const res = await POST('/api/forgot-password/send-otp', { email: forgotPwState.email });
+            forgotPwState.devOtp = res.devOtp || null;
+            toast(res.message || 'New verification code sent');
+            renderView();
+            startCooldown(res.cooldownSeconds || 60);
+          } catch (err) {
+            toast(err.message, true);
+            resendBtn.disabled = false;
+          }
+        };
+      }
+
+      const changeLink = $('#link-change', el);
+      if (changeLink) {
+        changeLink.onclick = (e) => {
+          e.preventDefault();
+          clearTimer();
+          forgotPwState.step = 'email';
+          renderView();
+        };
+      }
+
+      onSubmit($('#f-otp'), async (d) => {
+        const otp = String(d.otp || '').trim().replace(/\D/g, '');
+        if (otp.length !== 6) throw new Error('Please enter the complete 6-digit code');
+        const res = await POST('/api/forgot-password/verify-otp', { email: forgotPwState.email, otp });
+        forgotPwState.resetToken = res.resetToken;
+        forgotPwState.step = 'password';
+        clearTimer();
+        toast('Code verified! Please set your new password.');
+        renderView();
+      });
+      return;
+    }
+
+    if (forgotPwState.step === 'password') {
+      el.innerHTML = `<div class="auth">
+        <form class="card" id="f-reset">
+          <h1>Create New Password</h1>
+          <p class="muted" style="margin-top:0">Setting a new password for <strong>${esc(forgotPwState.email)}</strong></p>
+          <div class="field">
+            <label>New Password (min 8 characters)</label>
+            <input name="password" type="password" minlength="8" autocomplete="new-password" placeholder="••••••••" required>
+          </div>
+          <div class="field">
+            <label>Confirm New Password</label>
+            <input name="confirm" type="password" minlength="8" autocomplete="new-password" placeholder="••••••••" required>
+          </div>
+          <button class="btn primary" style="width:100%;justify-content:center" type="submit" id="btn-save">
+            Save New Password
+          </button>
+          <p class="hint" style="text-align:center;margin-top:14px">
+            <a href="#/" style="color:var(--muted);text-decoration:none">Cancel</a>
+          </p>
+        </form>
+      </div>`;
+
+      const pwInput = $('input[name=password]', el);
+      if (pwInput) setTimeout(() => pwInput.focus(), 50);
+
+      onSubmit($('#f-reset'), async (d) => {
+        if (!d.password || d.password.length < 8) throw new Error('Password must be at least 8 characters');
+        if (d.password !== d.confirm) throw new Error('Passwords do not match');
+        await POST('/api/forgot-password/reset-password', {
+          email: forgotPwState.email,
+          resetToken: forgotPwState.resetToken,
+          password: d.password,
+          confirm: d.confirm,
+        });
+        forgotPwState.step = 'success';
+        toast('Password updated successfully!');
+        renderView();
+      });
+      return;
+    }
+
+    if (forgotPwState.step === 'success') {
+      el.innerHTML = `<div class="auth">
+        <div class="card" style="text-align:center;padding:32px 24px;">
+          <div style="font-size:48px;line-height:1;margin-bottom:12px;">✅</div>
+          <h1 style="margin-bottom:8px;">Password Reset!</h1>
+          <p class="muted" style="margin:0 0 24px;line-height:1.5;">
+            Your password has been changed successfully. You can now sign in to your account.
+          </p>
+          <button class="btn primary" id="btn-to-login" style="width:100%;justify-content:center">
+            Sign In with New Password
+          </button>
+        </div>
+      </div>`;
+
+      $('#btn-to-login', el).onclick = () => {
+        forgotPwState = { step: 'email', email: '', resetToken: '', cooldown: 0, timerId: null };
+        location.hash = '/';
+        render();
+      };
+      return;
+    }
+  }
+
+  renderView();
 }
 
 // ---------------- shared views ----------------
