@@ -114,8 +114,6 @@ window.addEventListener('hashchange', render);
 
 async function render() {
   const app = $('#app');
-  // Allow forgot-password page without being logged in
-  if (parseHash().parts[0] === 'forgot-password') { renderForgotPw(app); return; }
   if (!state.me) {
     try { state.me = await GET('/api/me'); } catch { state.me = null; }
   }
@@ -159,270 +157,65 @@ const tabs = (items, cur, base) => `<div class="tabs">${items.map(([k, l]) => `<
 const table = (head, rows, emptyText = 'Nothing here yet') => `<div class="tbl-wrap"><table><thead><tr>${head.map((h) => (h.startsWith('#') ? `<th class="num">${esc(h.slice(1))}</th>` : `<th>${esc(h)}</th>`)).join('')}</tr></thead><tbody>${rows.length ? rows.join('') : `<tr><td colspan="${head.length}" class="empty">${esc(emptyText)}</td></tr>`}</tbody></table></div>`;
 
 // ---------------- auth screens ----------------
+function passwordStrength(value) {
+  const checks = [value.length >= 8, /[a-z]/.test(value), /[A-Z]/.test(value), /\d/.test(value), /[^A-Za-z0-9]/.test(value)];
+  const score = checks.filter(Boolean).length;
+  return { score, label: !value ? 'Enter a password' : score <= 2 ? 'Weak' : score <= 4 ? 'Good' : 'Strong' };
+}
+function bindPasswordTools(root) {
+  const input = $('[data-password-input]', root);
+  const meter = $('[data-password-meter]', root);
+  const toggle = $('[data-password-toggle]', root);
+  if (input && meter) {
+    const update = () => {
+      const result = passwordStrength(input.value);
+      meter.textContent = `${result.label} · Use 8+ characters with uppercase, lowercase, a number and a symbol.`;
+      meter.dataset.level = result.score <= 2 ? 'weak' : result.score <= 4 ? 'good' : 'strong';
+    };
+    input.addEventListener('input', update);
+    update();
+  }
+  if (input && toggle) toggle.addEventListener('click', () => {
+    const show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    toggle.textContent = show ? 'Hide' : 'Show';
+    toggle.setAttribute('aria-pressed', String(show));
+  });
+}
+function strongPassword(value) {
+  return value.length >= 8 && /[a-z]/.test(value) && /[A-Z]/.test(value) && /\d/.test(value) && /[^A-Za-z0-9]/.test(value);
+}
 function renderLogin(app, company) {
   app.innerHTML = `<div class="auth"><form class="card" id="f"><h1>${esc(company || 'HR Portal')}</h1><p class="muted" style="margin-top:0">Sign in to continue</p>
-    <div class="field"><label>Email or employee code</label><input name="login" autocomplete="username" required></div>
-    <div class="field"><label>Password</label><input name="password" type="password" autocomplete="current-password" required></div>
+    <div class="field"><label for="login-id">Email or employee code</label><input id="login-id" name="login" autocomplete="username" autocapitalize="none" spellcheck="false" required></div>
+    <div class="field"><label for="login-password">Password</label><div class="password-row"><input id="login-password" data-password-input name="password" type="password" autocomplete="current-password" required><button class="btn sm" type="button" data-password-toggle aria-label="Show password" aria-pressed="false">Show</button></div></div>
     <button class="btn primary" style="width:100%;justify-content:center" type="submit">Sign in</button>
-    <p class="hint"><a href="#/forgot-password" style="color:var(--brand);text-decoration:none">Forgot your password?</a></p></form></div>`;
+    <p class="hint">Forgot your password? Contact your HR administrator. HR can issue a temporary password from the employee record.</p></form></div>`;
+  bindPasswordTools($('#f'));
   onSubmit($('#f'), async (d) => { await POST('/api/login', d); state.me = null; render(); });
 }
 function renderSetup(app) {
   app.innerHTML = `<div class="auth"><form class="card" id="f"><h1>Welcome</h1><p class="muted" style="margin-top:0">Create the HR (admin) account. This screen only appears once.</p>
-    <div class="field"><label>Company name</label><input name="company" required></div>
-    <div class="field"><label>Your name</label><input name="name" required></div>
-    <div class="field"><label>Email</label><input name="email" type="email" required></div>
-    <div class="field"><label>Password (min 8 characters)</label><input name="password" type="password" minlength="8" required></div>
+    <div class="field"><label>Company name</label><input name="company" autocomplete="organization" required></div>
+    <div class="field"><label>Your name</label><input name="name" autocomplete="name" required></div>
+    <div class="field"><label>Email</label><input name="email" type="email" autocomplete="email" required></div>
+    <div class="field"><label>Password</label><div class="password-row"><input data-password-input name="password" type="password" minlength="8" autocomplete="new-password" required><button class="btn sm" type="button" data-password-toggle aria-label="Show password" aria-pressed="false">Show</button></div><div class="hint" data-password-meter aria-live="polite"></div></div>
     <button class="btn primary" style="width:100%;justify-content:center" type="submit">Create HR account</button></form></div>`;
-  onSubmit($('#f'), async (d) => { await POST('/api/setup', d); state.me = null; render(); });
+  bindPasswordTools($('#f'));
+  onSubmit($('#f'), async (d) => { if (!strongPassword(d.password)) throw new Error('Use at least 8 characters with uppercase, lowercase, a number and a symbol'); await POST('/api/setup', d); state.me = null; render(); });
 }
 function renderForcePw(app) {
   app.innerHTML = `<div class="auth"><form class="card" id="f"><h1>Set your password</h1><p class="muted" style="margin-top:0">Hi ${esc(state.me.name)}, please replace your temporary password.</p>
-    <div class="field"><label>Temporary password</label><input name="current" type="password" required></div>
-    <div class="field"><label>New password (min 8 characters)</label><input name="next" type="password" minlength="8" required></div>
-    <div class="field"><label>Repeat new password</label><input name="again" type="password" minlength="8" required></div>
+    <div class="field"><label>Temporary password</label><input name="current" type="password" autocomplete="current-password" required></div>
+    <div class="field"><label>New password</label><div class="password-row"><input data-password-input name="next" type="password" minlength="8" autocomplete="new-password" required><button class="btn sm" type="button" data-password-toggle aria-label="Show password" aria-pressed="false">Show</button></div><div class="hint" data-password-meter aria-live="polite"></div></div>
+    <div class="field"><label>Repeat new password</label><input name="again" type="password" minlength="8" autocomplete="new-password" required></div>
     <button class="btn primary" style="width:100%;justify-content:center" type="submit">Save password</button></form></div>`;
+  bindPasswordTools($('#f'));
   onSubmit($('#f'), async (d) => {
     if (d.next !== d.again) throw new Error('Passwords do not match');
+    if (!strongPassword(d.next)) throw new Error('Use at least 8 characters with uppercase, lowercase, a number and a symbol');
     await POST('/api/change-password', d); toast('Password updated'); state.me = null; render();
   });
-}
-
-let forgotPwState = {
-  step: 'email', // 'email' | 'otp' | 'password' | 'success'
-  email: '',
-  resetToken: '',
-  cooldown: 0,
-  timerId: null,
-  devOtp: null,
-};
-
-function renderForgotPw(el) {
-  function clearTimer() {
-    if (forgotPwState.timerId) {
-      clearInterval(forgotPwState.timerId);
-      forgotPwState.timerId = null;
-    }
-  }
-
-  function startCooldown(seconds = 60) {
-    clearTimer();
-    forgotPwState.cooldown = seconds;
-    forgotPwState.timerId = setInterval(() => {
-      forgotPwState.cooldown--;
-      if (forgotPwState.cooldown <= 0) {
-        clearTimer();
-        forgotPwState.cooldown = 0;
-      }
-      updateResendButton();
-    }, 1000);
-  }
-
-  function updateResendButton() {
-    const btn = $('#btn-resend', el);
-    if (!btn) return;
-    if (forgotPwState.cooldown > 0) {
-      btn.disabled = true;
-      btn.textContent = `Resend code in ${forgotPwState.cooldown}s`;
-    } else {
-      btn.disabled = false;
-      btn.textContent = 'Resend Verification Code';
-    }
-  }
-
-  function renderView() {
-    clearTimer();
-
-    if (forgotPwState.step === 'email') {
-      el.innerHTML = `<div class="auth">
-        <form class="card" id="f-email">
-          <h1>Forgot Password</h1>
-          <p class="muted" style="margin-top:0">Enter your registered email address. We will send you a 6-digit verification code to reset your password.</p>
-          <div class="field">
-            <label>Registered Email</label>
-            <input name="email" type="email" autocomplete="email" placeholder="e.g. name@company.com" required value="${esc(forgotPwState.email)}">
-          </div>
-          <button class="btn primary" style="width:100%;justify-content:center" type="submit" id="btn-send">
-            Send Verification Code
-          </button>
-          <p class="hint" style="text-align:center;margin-top:16px">
-            <a href="#/" style="color:var(--brand);text-decoration:none">← Back to Sign In</a>
-          </p>
-        </form>
-      </div>`;
-
-      const input = $('input[name=email]', el);
-      if (input) setTimeout(() => input.focus(), 50);
-
-      onSubmit($('#f-email'), async (d) => {
-        const email = String(d.email || '').trim().toLowerCase();
-        if (!email) throw new Error('Please enter your email address');
-        const res = await POST('/api/forgot-password/send-otp', { email });
-        forgotPwState.email = email;
-        forgotPwState.step = 'otp';
-        forgotPwState.devOtp = res.devOtp || null;
-        toast(res.message || 'Verification code sent to your email');
-        renderView();
-        startCooldown(res.cooldownSeconds || 60);
-      });
-      return;
-    }
-
-    if (forgotPwState.step === 'otp') {
-      el.innerHTML = `<div class="auth">
-        <form class="card" id="f-otp">
-          <h1>Verify Code</h1>
-          <p class="muted" style="margin-top:0">We sent a 6-digit code to <strong>${esc(forgotPwState.email)}</strong></p>
-          ${forgotPwState.devOtp ? `
-            <div class="note warn" style="margin-bottom:14px;line-height:1.45;">
-              <strong>⚠️ SMTP Credentials Not Configured:</strong><br>
-              Real emails cannot be sent until you add your Gmail credentials to the <code>.env</code> file.<br>
-              <div style="margin-top:6px;padding:6px 10px;background:#fff;border-radius:6px;border:1px solid #fedf89;display:inline-block;">
-                Testing code: <strong style="font-family:monospace;letter-spacing:2px;font-size:16px;color:#b54708;">${esc(forgotPwState.devOtp)}</strong>
-              </div>
-            </div>
-          ` : `
-            <div class="note" style="margin-bottom:14px;display:flex;align-items:center;gap:8px">
-              <span style="font-size:16px">⏱</span>
-              <span>Code expires in <strong>5 minutes</strong> &bull; Single-use only</span>
-            </div>
-          `}
-          <div class="field">
-            <label>6-Digit Verification Code</label>
-            <input name="otp" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6"
-                   placeholder="123456" autocomplete="one-time-code" required
-                   style="font-size:24px;letter-spacing:8px;text-align:center;font-weight:700;font-family:monospace;padding:10px;">
-            <div class="hint" style="text-align:center">Enter the 6 numbers from your email</div>
-          </div>
-          <button class="btn primary" style="width:100%;justify-content:center;margin-top:6px" type="submit" id="btn-verify">
-            Verify Code
-          </button>
-          <div style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px">
-            <button type="button" class="btn" id="btn-resend" style="width:100%;justify-content:center" ${forgotPwState.cooldown > 0 ? 'disabled' : ''}>
-              ${forgotPwState.cooldown > 0 ? `Resend code in ${forgotPwState.cooldown}s` : 'Resend Verification Code'}
-            </button>
-          </div>
-          <p class="hint" style="text-align:center;margin-top:14px">
-            <a href="#" id="link-change" style="color:var(--muted);text-decoration:none">Use a different email</a>
-            &nbsp;&bull;&nbsp;
-            <a href="#/" style="color:var(--brand);text-decoration:none">Back to Sign In</a>
-          </p>
-        </form>
-      </div>`;
-
-      const otpInput = $('input[name=otp]', el);
-      if (otpInput) setTimeout(() => otpInput.focus(), 50);
-
-      if (forgotPwState.cooldown > 0) {
-        startCooldown(forgotPwState.cooldown);
-      }
-
-      const resendBtn = $('#btn-resend', el);
-      if (resendBtn) {
-        resendBtn.onclick = async () => {
-          if (forgotPwState.cooldown > 0) return;
-          resendBtn.disabled = true;
-          try {
-            const res = await POST('/api/forgot-password/send-otp', { email: forgotPwState.email });
-            forgotPwState.devOtp = res.devOtp || null;
-            toast(res.message || 'New verification code sent');
-            renderView();
-            startCooldown(res.cooldownSeconds || 60);
-          } catch (err) {
-            toast(err.message, true);
-            resendBtn.disabled = false;
-          }
-        };
-      }
-
-      const changeLink = $('#link-change', el);
-      if (changeLink) {
-        changeLink.onclick = (e) => {
-          e.preventDefault();
-          clearTimer();
-          forgotPwState.step = 'email';
-          renderView();
-        };
-      }
-
-      onSubmit($('#f-otp'), async (d) => {
-        const otp = String(d.otp || '').trim().replace(/\D/g, '');
-        if (otp.length !== 6) throw new Error('Please enter the complete 6-digit code');
-        const res = await POST('/api/forgot-password/verify-otp', { email: forgotPwState.email, otp });
-        forgotPwState.resetToken = res.resetToken;
-        forgotPwState.step = 'password';
-        clearTimer();
-        toast('Code verified! Please set your new password.');
-        renderView();
-      });
-      return;
-    }
-
-    if (forgotPwState.step === 'password') {
-      el.innerHTML = `<div class="auth">
-        <form class="card" id="f-reset">
-          <h1>Create New Password</h1>
-          <p class="muted" style="margin-top:0">Setting a new password for <strong>${esc(forgotPwState.email)}</strong></p>
-          <div class="field">
-            <label>New Password (min 8 characters)</label>
-            <input name="password" type="password" minlength="8" autocomplete="new-password" placeholder="••••••••" required>
-          </div>
-          <div class="field">
-            <label>Confirm New Password</label>
-            <input name="confirm" type="password" minlength="8" autocomplete="new-password" placeholder="••••••••" required>
-          </div>
-          <button class="btn primary" style="width:100%;justify-content:center" type="submit" id="btn-save">
-            Save New Password
-          </button>
-          <p class="hint" style="text-align:center;margin-top:14px">
-            <a href="#/" style="color:var(--muted);text-decoration:none">Cancel</a>
-          </p>
-        </form>
-      </div>`;
-
-      const pwInput = $('input[name=password]', el);
-      if (pwInput) setTimeout(() => pwInput.focus(), 50);
-
-      onSubmit($('#f-reset'), async (d) => {
-        if (!d.password || d.password.length < 8) throw new Error('Password must be at least 8 characters');
-        if (d.password !== d.confirm) throw new Error('Passwords do not match');
-        await POST('/api/forgot-password/reset-password', {
-          email: forgotPwState.email,
-          resetToken: forgotPwState.resetToken,
-          password: d.password,
-          confirm: d.confirm,
-        });
-        forgotPwState.step = 'success';
-        toast('Password updated successfully!');
-        renderView();
-      });
-      return;
-    }
-
-    if (forgotPwState.step === 'success') {
-      el.innerHTML = `<div class="auth">
-        <div class="card" style="text-align:center;padding:32px 24px;">
-          <div style="font-size:48px;line-height:1;margin-bottom:12px;">✅</div>
-          <h1 style="margin-bottom:8px;">Password Reset!</h1>
-          <p class="muted" style="margin:0 0 24px;line-height:1.5;">
-            Your password has been changed successfully. You can now sign in to your account.
-          </p>
-          <button class="btn primary" id="btn-to-login" style="width:100%;justify-content:center">
-            Sign In with New Password
-          </button>
-        </div>
-      </div>`;
-
-      $('#btn-to-login', el).onclick = () => {
-        forgotPwState = { step: 'email', email: '', resetToken: '', cooldown: 0, timerId: null };
-        location.hash = '/';
-        render();
-      };
-      return;
-    }
-  }
-
-  renderView();
 }
 
 // ---------------- shared views ----------------
@@ -522,13 +315,48 @@ const EMP_PAGES = {
     const d = await GET('/api/my/dashboard');
     const t = d.today;
     const n = d.notice;
+    const summary = d.month_summary || {};
+    const todayStatus = t?.status === 'WO' ? 'Weekly off'
+      : t?.status === 'H' ? 'Holiday'
+        : t?.status === 'P' ? 'Present'
+          : t?.status === 'HD' ? 'Half day'
+            : t?.status === 'MP' ? 'Missing punch'
+              : t?.status === 'A' ? 'Absent'
+                : t?.status === '-' ? 'No punch yet'
+                  : t?.label || 'Not available';
+    const attendanceTone = ['Present'].includes(todayStatus) ? 'ok' : (['Weekly off', 'Holiday'].includes(todayStatus) ? 'info' : 'warn');
+    const worked = Number(summary.present || 0) + Number(summary.half_day || 0);
+    const attendancePct = summary.elapsed_working_days
+      ? Math.min(100, Math.round((worked / summary.elapsed_working_days) * 100)) : 0;
     el.innerHTML = `${header(`Hello, ${d.profile.name.split(' ')[0]}`, `${esc(d.profile.designation || '')} ${d.profile.department ? '· ' + esc(d.profile.department) : ''} · ${esc(d.profile.emp_code)}`, `<a class="btn" href="#/breaks?new=1">Request break</a><a class="btn primary" href="#/leaves?new=1">Apply leave</a>`)}
     ${d.profile.status === 'notice' && n.last_working_day ? `<div class="note warn">You are serving notice. Last working day: <b>${fmtDate(n.last_working_day)}</b> (${n.days_remaining} days left).</div>` : ''}
+    <div class="card dashboard-attendance">
+      <div class="dash-attendance-head">
+        <div><div class="k">Today's attendance</div><div class="dash-status">${pill(attendanceTone, todayStatus)}</div></div>
+        <a class="btn sm" href="#/attendance">View attendance</a>
+      </div>
+      <div class="grid g3">
+        <div><div class="k">First login</div><div class="dash-time">${t?.first_in ? t12(t.first_in) : '—'}</div></div>
+        <div><div class="k">Last logout</div><div class="dash-time">${t?.last_out ? t12(t.last_out) : '—'}</div></div>
+        <div><div class="k">Working time</div><div class="dash-time">${t?.minutes != null ? hm(t.minutes) : '—'}</div></div>
+      </div>
+      <div class="hint">${t?.source ? `Attendance source: ${esc(t.source)}` : 'Attendance times appear here after biometric attendance is synchronized.'}</div>
+    </div>
     <div class="grid g4" style="margin-bottom:16px">
-      <div class="stat"><div class="k">Today</div><div class="v" style="font-size:18px">${t?.first_in ? `In ${t12(t.first_in)}` : t?.label || '—'}</div><div class="s">${t?.last_out ? `Out ${t12(t.last_out)} · ${hm(t.minutes)}` : t?.first_in ? 'Out: not yet' : 'From biometric data'}</div></div>
-      <div class="stat"><div class="k">This month present</div><div class="v">${d.month_summary.present}</div><div class="s">${d.month_summary.absent} absent · ${d.month_summary.late} late</div></div>
-      <a class="stat" href="#/leaves"><div class="k">Pending requests</div><div class="v">${d.pending.leaves + d.pending.breaks}</div><div class="s">${d.pending.leaves} leave · ${d.pending.breaks} break</div></a>
+      <div class="stat"><div class="k">Present this month</div><div class="v">${summary.present || 0}</div><div class="s">${summary.absent || 0} absent · ${summary.late || 0} late</div></div>
+      <div class="stat"><div class="k">Scheduled working days</div><div class="v">${summary.scheduled_working_days || 0}</div><div class="s">${summary.elapsed_working_days || 0} elapsed so far</div></div>
+      <div class="stat"><div class="k">Pending requests</div><div class="v">${d.pending.leaves + d.pending.breaks}</div><div class="s">${d.pending.leaves} leave · ${d.pending.breaks} break</div><a class="stat-link" href="#/leaves">View requests →</a></div>
       <a class="stat" href="${d.last_payslip ? '#/payslip/' + d.last_payslip.id : '#/salary'}"><div class="k">Last payslip</div><div class="v">${d.last_payslip ? inr(d.last_payslip.net_pay) : '—'}</div><div class="s">${d.last_payslip ? fmtMonth(d.last_payslip.month) : 'None yet'}</div></a>
+    </div>
+    <div class="card">
+      <div class="row" style="justify-content:space-between"><h2>Monthly attendance progress</h2><span class="muted">${attendancePct}% of elapsed working days present/half-day</span></div>
+      <div class="progress-track"><div class="progress-fill" style="width:${attendancePct}%"></div></div>
+      <div class="dash-metrics"><span>${summary.half_day || 0} half days</span><span>${summary.leave || 0} leave days</span><span>${summary.weekly_off || 0} weekly offs</span><span>${summary.holiday || 0} holidays</span></div>
+    </div>
+    <div class="card">
+      <h2>Office working schedule</h2>
+      <div class="schedule-chips"><span class="schedule-chip active">1st Saturday · Working</span><span class="schedule-chip off">2nd Saturday · Off</span><span class="schedule-chip active">3rd Saturday · Working</span><span class="schedule-chip off">4th Saturday · Off</span><span class="schedule-chip active">5th Saturday · Working</span></div>
+      <div class="hint">Monday to Friday: Working · Sunday: Weekly off. Declared company holidays are handled separately.</div>
     </div>
     <h2>Leave balance</h2>${leaveBalanceCards(d.balances)}`;
   },
@@ -733,21 +561,27 @@ const HR_PAGES = {
     const totals = done.reduce((a, r) => { a.gross += r.payslip.gross; a.net += r.payslip.net_pay; a.pf += r.payslip.pf_employee + r.payslip.pf_employer_epf + r.payslip.pf_employer_eps; return a; }, { gross: 0, net: 0, pf: 0 });
     el.innerHTML = `${header('Run payroll', fmtMonth(month), monthPicker(month, '#/payroll?'))}
       ${todo.length ? `<div class="card"><h2>To process (${todo.length})</h2><p class="muted" style="margin-top:-6px">Loss-of-pay days are suggested from biometric attendance and unpaid leave. Change any figure, then generate.</p>
-      ${table(['', 'Employee', '#Paid days', 'LOP days', 'Incentive (₹)', 'Other deduction (₹)', 'TDS (₹)', '#Gross', '#Deductions', '#Net pay', 'Notes'], todo.map((r) => { const p = r.preview; return `<tr data-emp="${r.employee.id}"><td><input type="checkbox" class="sel" checked></td><td><b>${esc(r.employee.name)}</b><div class="muted">${esc(r.employee.emp_code)}</div></td>
+      ${table(['', 'Employee', '#Paid days', 'LOP days', 'Incentive (₹)', 'Other deduction (₹)', 'TDS (₹)', '#Gross', '#Deductions', '#Net pay', 'Notes'], todo.map((r) => {
+      const p = r.preview; return `<tr data-emp="${r.employee.id}"><td><input type="checkbox" class="sel" checked></td><td><b>${esc(r.employee.name)}</b><div class="muted">${esc(r.employee.emp_code)}</div></td>
         <td class="num pd">${p.paid_days}</td><td><input class="in" name="lop_days" type="number" step="0.5" min="0" value="${p.lop_days}" style="width:80px"></td><td><input class="in" name="other_earnings" type="number" min="0" value="0" style="width:100px"></td><td><input class="in" name="other_deductions" type="number" min="0" value="0" style="width:100px"></td><td><input class="in" name="tds" type="number" min="0" value="${p.tds}" style="width:90px"></td>
-        <td class="num g">${inr(p.gross)}</td><td class="num dd">${inr(p.total_deductions)}</td><td class="num n"><b>${inr(p.net_pay)}</b></td><td class="wrap muted" style="font-size:12px">${esc(p.warnings.join(' '))}</td></tr>`; }))}
+        <td class="num g">${inr(p.gross)}</td><td class="num dd">${inr(p.total_deductions)}</td><td class="num n"><b>${inr(p.net_pay)}</b></td><td class="wrap muted" style="font-size:12px">${esc(p.warnings.join(' '))}</td></tr>`;
+    }))}
       <div class="row" style="margin-top:12px"><button class="btn primary" id="gen">Generate payslips for selected</button></div></div>` : ''}
       <div class="card"><div class="row" style="justify-content:space-between"><h2>Processed (${done.length})</h2>${done.length ? `<div class="row"><span class="muted">Gross ${inr(totals.gross)} · Net ${inr(totals.net)} · PF total ${inr(totals.pf)}</span><button class="btn" id="paid">Mark selected as paid</button></div>` : ''}</div>
-      ${table(['', 'Employee', '#Paid days', '#LOP', '#Gross', '#PF', '#PT', '#TDS', '#Net pay', 'Status', ''], done.map((r) => { const p = r.payslip; return `<tr><td>${p.status !== 'paid' ? `<input type="checkbox" class="psel" value="${p.id}" checked>` : ''}</td><td><b>${esc(r.employee.name)}</b><div class="muted">${esc(r.employee.emp_code)}</div></td><td class="num">${p.paid_days}</td><td class="num">${p.lop_days}</td><td class="num">${inr(p.gross)}</td><td class="num">${inr(p.pf_employee)}</td><td class="num">${inr(p.pt)}</td><td class="num">${inr(p.tds)}</td><td class="num"><b>${inr(p.net_pay)}</b></td>
-        <td>${pill(p.status, p.status === 'paid' ? 'Paid' : 'Processed')}${p.paid_on ? `<div class="muted">${fmtDate(p.paid_on)}</div>` : ''}</td><td><a class="btn sm" href="#/payslip/${p.id}">View</a> ${p.status !== 'paid' ? `<button class="btn sm danger" data-del="${p.id}">Redo</button>` : ''}</td></tr>`; }), 'No payslips generated for this month yet')}</div>`;
+      ${table(['', 'Employee', '#Paid days', '#LOP', '#Gross', '#PF', '#PT', '#TDS', '#Net pay', 'Status', ''], done.map((r) => {
+      const p = r.payslip; return `<tr><td>${p.status !== 'paid' ? `<input type="checkbox" class="psel" value="${p.id}" checked>` : ''}</td><td><b>${esc(r.employee.name)}</b><div class="muted">${esc(r.employee.emp_code)}</div></td><td class="num">${p.paid_days}</td><td class="num">${p.lop_days}</td><td class="num">${inr(p.gross)}</td><td class="num">${inr(p.pf_employee)}</td><td class="num">${inr(p.pt)}</td><td class="num">${inr(p.tds)}</td><td class="num"><b>${inr(p.net_pay)}</b></td>
+        <td>${pill(p.status, p.status === 'paid' ? 'Paid' : 'Processed')}${p.paid_on ? `<div class="muted">${fmtDate(p.paid_on)}</div>` : ''}</td><td><a class="btn sm" href="#/payslip/${p.id}">View</a> ${p.status !== 'paid' ? `<button class="btn sm danger" data-del="${p.id}">Redo</button>` : ''}</td></tr>`;
+    }), 'No payslips generated for this month yet')}</div>`;
 
     // live recalculation of preview rows
     $$('tr[data-emp]', el).forEach((tr) => {
       let timer;
-      $$('.in', tr).forEach((inp) => (inp.oninput = () => { clearTimeout(timer); timer = setTimeout(async () => {
-        const body = { month, employee_id: tr.dataset.emp }; $$('.in', tr).forEach((i) => (body[i.name] = i.value === '' ? undefined : Number(i.value)));
-        try { const p = await POST('/api/admin/payroll/preview', body); $('.pd', tr).textContent = p.paid_days; $('.g', tr).textContent = inr(p.gross); $('.dd', tr).textContent = inr(p.total_deductions); $('.n', tr).innerHTML = `<b>${inr(p.net_pay)}</b>`; } catch (e) { toast(e.message, true); }
-      }, 350); }));
+      $$('.in', tr).forEach((inp) => (inp.oninput = () => {
+        clearTimeout(timer); timer = setTimeout(async () => {
+          const body = { month, employee_id: tr.dataset.emp }; $$('.in', tr).forEach((i) => (body[i.name] = i.value === '' ? undefined : Number(i.value)));
+          try { const p = await POST('/api/admin/payroll/preview', body); $('.pd', tr).textContent = p.paid_days; $('.g', tr).textContent = inr(p.gross); $('.dd', tr).textContent = inr(p.total_deductions); $('.n', tr).innerHTML = `<b>${inr(p.net_pay)}</b>`; } catch (e) { toast(e.message, true); }
+        }, 350);
+      }));
     });
     $('#gen')?.addEventListener('click', async () => {
       const items = $$('tr[data-emp]', el).filter((tr) => $('.sel', tr).checked).map((tr) => { const o = { employee_id: tr.dataset.emp }; $$('.in', tr).forEach((i) => (o[i.name] = i.value)); return o; });
@@ -772,8 +606,8 @@ const HR_PAGES = {
     let body = '';
     if (tab === 'company') {
       body = `<form id="sf" class="card"><div class="grid g2">${f('company_name', 'Company name')}<div class="field"><label>Company address (shown on payslips)</label><textarea name="company_address">${esc(s.company_address)}</textarea></div></div>
-        <h3>Working days</h3><div class="field"><label>Weekly off days</label><div class="row">${DOW.map((n, i) => `<label class="check"><input type="checkbox" class="wo" value="${i}" ${s.weekly_off.split(',').includes(String(i)) ? 'checked' : ''}> ${n}</label>`).join('')}</div></div>
-        <div class="grid g3">${f('off_saturdays', 'Saturdays off (which ones)', 'text', 'e.g. 2,4 for 2nd and 4th Saturday. Leave blank if not used.')}${f('shift_start', 'Shift start', 'time')}${f('grace_minutes', 'Late grace (minutes)', 'number')}${f('full_day_hours', 'Hours for a full day', 'number', 'First login to last logout')}${f('half_day_hours', 'Hours for a half day', 'number', 'Less than this = absent')}${f('default_notice_days', 'Default notice period (days)', 'number')}</div>
+        <h3>Working days</h3><div class="note info"><b>RIOT Ecommerce office schedule</b><br>Monday–Friday: Working · Sunday: Weekly off · 1st, 3rd and 5th Saturday: Working · 2nd and 4th Saturday: Weekly off. This company policy is applied automatically to attendance, leave-day and payroll attendance calculations.</div>
+        <div class="grid g3">${f('shift_start', 'Shift start', 'time')}${f('grace_minutes', 'Late grace (minutes)', 'number')}${f('full_day_hours', 'Hours for a full day', 'number', 'First login to last logout')}${f('half_day_hours', 'Hours for a half day', 'number', 'Less than this = absent')}${f('default_notice_days', 'Default notice period (days)', 'number')}</div>
         <button class="btn primary" type="submit">Save</button></form>`;
     } else if (tab === 'payroll') {
       body = `<form id="sf" class="card"><div class="note">Defaults reflect rules as of November 2026: EPF wage ceiling ₹25,000 (from 17 Sep 2026), Telangana professional tax, and the labour-code rule that PF wages are at least 50% of gross. Confirm with your CA before your first payroll.</div>
@@ -798,7 +632,6 @@ const HR_PAGES = {
     }
     el.innerHTML = header('Settings') + t + body;
     if ($('#sf')) onSubmit($('#sf'), async (data, form) => {
-      if (tab === 'company') data.weekly_off = $$('.wo', form).filter((c) => c.checked).map((c) => c.value).join(',');
       for (const k of ['pf_restrict_to_ceiling', 'pf_apply_50pct_rule']) if (k in data) data[k] = data[k] ? '1' : '0';
       await api('PUT', '/api/admin/settings', data); toast('Settings saved'); state.me = null; render();
     });

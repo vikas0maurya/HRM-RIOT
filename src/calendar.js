@@ -7,7 +7,7 @@ const parseYmd = (s) => { const [y, m, d] = s.split('-').map(Number); return new
 const addDays = (s, n) => { const d = parseYmd(s); d.setDate(d.getDate() + n); return ymd(d); };
 const today = () => ymd(new Date());
 const daysBetween = (a, b) => Math.round((parseYmd(b) - parseYmd(a)) / 86400000);
-const isDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(parseYmd(s));
+const isDate = (s) => { if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false; const [y, m, d] = s.split('-').map(Number); const x = new Date(y, m - 1, d); return x.getFullYear() === y && x.getMonth() === m - 1 && x.getDate() === d; };
 const isMonth = (s) => typeof s === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(s);
 const monthDays = (month) => { const [y, m] = month.split('-').map(Number); return new Date(y, m, 0).getDate(); };
 const monthRange = (month) => [`${month}-01`, `${month}-${pad(monthDays(month))}`];
@@ -17,14 +17,20 @@ function holidaySet() {
   return new Set(db.prepare('SELECT date FROM holidays').all().map((r) => r.date));
 }
 
-function isWeeklyOff(dateStr, s) {
+// RIOT Ecommerce fixed office schedule:
+// - Every Sunday is weekly off.
+// - 2nd and 4th Saturdays are weekly offs.
+// - 1st, 3rd and 5th Saturdays are working days.
+// - Monday to Friday are working days.
+// This policy is intentionally centralized so attendance, leave and payroll
+// calculations all use the same calendar.
+function isWeeklyOff(dateStr, _settings = {}) {
   const d = parseYmd(dateStr);
-  const dow = d.getDay();
-  const offs = (s.weekly_off || '').split(',').filter(Boolean).map(Number);
-  if (offs.includes(dow)) return true;
-  if (dow === 6 && s.off_saturdays) {
-    const nth = Math.ceil(d.getDate() / 7);
-    return s.off_saturdays.split(',').map(Number).includes(nth);
+  const dow = d.getDay(); // 0=Sunday ... 6=Saturday
+  if (dow === 0) return true;
+  if (dow === 6) {
+    const nthSaturday = Math.ceil(d.getDate() / 7);
+    return nthSaturday === 2 || nthSaturday === 4;
   }
   return false;
 }
@@ -53,13 +59,18 @@ function monthStatus(emp, month, s) {
   const lateAfter = toMin(s.shift_start) + Number(s.grace_minutes || 0);
 
   const days = [];
-  const sum = { present: 0, absent: 0, half_day: 0, leave: 0, unpaid_leave: 0, holiday: 0, weekly_off: 0, late: 0, missing_punch: 0, lop: 0 };
+  const sum = { present: 0, absent: 0, half_day: 0, leave: 0, unpaid_leave: 0, holiday: 0, weekly_off: 0, late: 0, missing_punch: 0, lop: 0, scheduled_working_days: 0, elapsed_working_days: 0 };
   for (let d = start; d <= end; d = addDays(d, 1)) {
     const a = att.get(d);
     const day = { date: d, first_in: a?.first_in || null, last_out: a?.last_out || null, punches: a ? JSON.parse(a.punches) : [], source: a?.source, note: a?.note, minutes: null, status: '', label: '', late: false, lop: 0 };
     if (a?.first_in && a?.last_out && a.last_out !== a.first_in) day.minutes = toMin(a.last_out) - toMin(a.first_in);
     day.breaks = breaks.filter((b) => b.date === d).map((b) => ({ start: b.start_time, end: b.end_time, reason: b.reason }));
     const lv = leaves.find((l) => l.from_date <= d && l.to_date >= d);
+    const employedOnDate = !(emp.doj && d < emp.doj) && !(emp.relieving_date && d > emp.relieving_date);
+    if (employedOnDate && !hol.has(d) && !isWeeklyOff(d, s)) {
+      sum.scheduled_working_days++;
+      if (d <= t) sum.elapsed_working_days++;
+    }
 
     if ((emp.doj && d < emp.doj) || (emp.relieving_date && d > emp.relieving_date)) {
       day.status = 'NA'; day.label = 'Not employed';

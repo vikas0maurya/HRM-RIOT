@@ -78,3 +78,19 @@ All rates are editable in Settings. They are defaults, not legal advice, so conf
 - Passwords are hashed (scrypt). Sessions use HttpOnly, SameSite=Strict cookies and expire after 7 days. Login is throttled after 10 failures.
 - Every employee API route works only on the logged-in employee's own record. Employee IDs are never taken from the request, so one employee cannot open another's data.
 - HR users see everything. Only give HR access to people who should.
+
+
+## RIOT Ecommerce working-day policy
+
+The attendance calendar uses this fixed office schedule:
+- Monday to Friday: working days.
+- Sunday: weekly off.
+- 1st, 3rd and 5th Saturdays: working days.
+- 2nd and 4th Saturdays: weekly offs.
+- Company holidays recorded in Settings remain holidays, regardless of weekday.
+
+This policy is centralized in `src/calendar.js` and is used by attendance status and leave-day calculations. Payroll LOP recommendations use the attendance calendar. The existing salary proration divisor remains calendar-day based; confirm with Finance before changing that compensation policy.
+
+## Page 2 dashboard update
+
+The employee dashboard now shows today's attendance status, first login, last logout, recorded working time, monthly attendance summary, scheduled working days, attendance progress, pending requests, latest payslip, and the office working-day schedule.

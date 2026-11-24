@@ -191,42 +191,13 @@ CREATE TABLE IF NOT EXISTS payslips (
 
 CREATE INDEX IF NOT EXISTS idx_att_date ON attendance(date);
 CREATE INDEX IF NOT EXISTS idx_ledger_emp ON leave_ledger(employee_id);
-
-CREATE TABLE IF NOT EXISTS otp_tokens (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  email TEXT NOT NULL,
-  otp_hash TEXT NOT NULL,                 -- scrypt hash of the 6-digit OTP
-  expires_at INTEGER NOT NULL,            -- Unix ms timestamp (5 mins)
-  resend_available_at INTEGER NOT NULL DEFAULT 0, -- Unix ms timestamp (60s cooldown)
-  verified INTEGER NOT NULL DEFAULT 0,    -- 1 when OTP is verified
-  reset_token TEXT,                       -- token for password reset step
-  reset_token_expires_at INTEGER NOT NULL DEFAULT 0,
-  used INTEGER NOT NULL DEFAULT 0,        -- single use flag
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_otp_email ON otp_tokens(email);
 `);
-
-// Migration to ensure otp_tokens columns exist on existing databases
-try {
-  const existingCols = db.prepare("PRAGMA table_info(otp_tokens)").all().map((c) => c.name);
-  if (!existingCols.includes('resend_available_at')) db.exec("ALTER TABLE otp_tokens ADD COLUMN resend_available_at INTEGER NOT NULL DEFAULT 0");
-  if (!existingCols.includes('verified')) db.exec("ALTER TABLE otp_tokens ADD COLUMN verified INTEGER NOT NULL DEFAULT 0");
-  if (!existingCols.includes('reset_token')) db.exec("ALTER TABLE otp_tokens ADD COLUMN reset_token TEXT");
-  if (!existingCols.includes('reset_token_expires_at')) db.exec("ALTER TABLE otp_tokens ADD COLUMN reset_token_expires_at INTEGER NOT NULL DEFAULT 0");
-  db.exec("CREATE INDEX IF NOT EXISTS idx_otp_reset ON otp_tokens(reset_token)");
-} catch (_) {}
-
-// Fix typo in admin email (viond.riot@gmail.com -> vinodsingh.riot@gmail.com)
-try {
-  db.prepare("UPDATE users SET email = 'vinodsingh.riot@gmail.com' WHERE lower(email) = 'viond.riot@gmail.com'").run();
-} catch (_) {}
 
 const DEFAULT_SETTINGS = {
   company_name: 'My Company',
   company_address: '',
-  weekly_off: '0',              // 0=Sun ... 6=Sat, comma separated
-  off_saturdays: '',            // nth Saturdays off e.g. "2,4" (only used if 6 not in weekly_off)
+  weekly_off: '0',              // RIOT policy: Sunday is weekly off
+  off_saturdays: '2,4',          // RIOT policy: 2nd and 4th Saturdays are off; 1st/3rd/5th work
   shift_start: '09:30',
   grace_minutes: '15',
   full_day_hours: '8',
@@ -252,13 +223,10 @@ for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) {
 
 if (db.prepare('SELECT COUNT(*) c FROM leave_types').get().c === 0) {
   const ins = db.prepare('INSERT INTO leave_types(code,name,annual_quota,paid) VALUES (?,?,?,?)');
-  ins.run('CL', 'Casual Leave', 12, 1);  // 1 per month
-  ins.run('SL', 'Sick Leave', 12, 1);    // 1 per month
+  ins.run('CL', 'Casual Leave', 12, 1);
+  ins.run('SL', 'Sick Leave', 6, 1);
+  ins.run('EL', 'Earned Leave', 15, 1);
   ins.run('LOP', 'Loss of Pay', 0, 0);
-} else {
-  // Migration: update SL quota to 12/year (1/month) and deactivate EL
-  db.prepare("UPDATE leave_types SET annual_quota = 12 WHERE code = 'SL'").run();
-  db.prepare("UPDATE leave_types SET active = 0 WHERE code = 'EL'").run();
 }
 
 function settings() {
