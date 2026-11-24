@@ -1035,3 +1035,175 @@ textarea {
     gap: 8px;
   }
 }
+
+
+/* Header appearance toggle and dark theme */
+.app-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  min-height: 34px;
+  margin: -8px 0 12px;
+  gap: 8px;
+}
+
+.theme-toggle {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 19px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease, transform .15s ease;
+}
+
+.theme-toggle:hover {
+  border-color: var(--brand);
+  transform: translateY(-1px);
+}
+
+@media (max-width: 860px) {
+  .app-toolbar {
+    justify-content: space-between;
+    margin: 0 0 12px;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0b1220;
+  --panel: #111c2e;
+  --ink: #e5eaf3;
+  --muted: #9aa8bd;
+  --line: #29364a;
+  --brand: #82a3ff;
+  --brand-soft: #1c3158;
+  --ok: #55c99a;
+  --ok-soft: #153b32;
+  --warn: #f3b45f;
+  --warn-soft: #45321c;
+  --bad: #ff8178;
+  --bad-soft: #482522;
+  --info-soft: #202d40;
+}
+
+:root[data-theme="dark"] body {
+  background: var(--bg);
+  color: var(--ink);
+}
+
+:root[data-theme="dark"] .side {
+  background: #080e19;
+}
+
+:root[data-theme="dark"] .side a:hover {
+  background: #172338;
+}
+
+:root[data-theme="dark"] .card,
+:root[data-theme="dark"] .stat,
+:root[data-theme="dark"] .riot-work-schedule,
+:root[data-theme="dark"] .slip {
+  background: var(--panel);
+  color: var(--ink);
+  border-color: var(--line);
+}
+
+:root[data-theme="dark"] th {
+  background: #172338;
+  color: var(--muted);
+}
+
+:root[data-theme="dark"] td,
+:root[data-theme="dark"] th {
+  border-color: var(--line);
+}
+
+:root[data-theme="dark"] tr.click:hover td {
+  background: #172338;
+}
+
+:root[data-theme="dark"] input,
+:root[data-theme="dark"] select,
+:root[data-theme="dark"] textarea {
+  background: #0d1727;
+  color: var(--ink);
+  border-color: #3a4960;
+}
+
+:root[data-theme="dark"] label {
+  color: #c6d1e1;
+}
+
+:root[data-theme="dark"] .btn:not(.primary) {
+  background: #172338;
+  color: var(--ink);
+  border-color: var(--line);
+}
+
+:root[data-theme="dark"] .theme-toggle {
+  background: #172338;
+  color: #f7d77a;
+  border-color: #3a4960;
+}
+
+:root[data-theme="dark"] .tabs {
+  border-color: var(--line);
+}
+
+:root[data-theme="dark"] .tabs a {
+  color: var(--muted);
+}
+
+:root[data-theme="dark"] .tabs a.on {
+  color: var(--brand);
+  border-color: var(--brand);
+}
+
+:root[data-theme="dark"] .overlay {
+  background: rgba(0, 0, 0, .72);
+}
+
+:root[data-theme="dark"] .modal {
+  background: var(--panel);
+  color: var(--ink);
+  border-color: var(--line);
+}
+
+:root[data-theme="dark"] .note,
+:root[data-theme="dark"] .kv {
+  background: #172338;
+  color: var(--ink);
+  border-color: var(--line);
+}
+
+:root[data-theme="dark"] .slip .net {
+  background: #1c3158;
+}
+
+:root[data-theme="dark"] .progress-track {
+  background: #29364a;
+}
+
+:root[data-theme="dark"] .leave-calendar-item {
+  border-color: var(--line);
+  background: var(--panel);
+}
+
+@media print {
+  :root[data-theme="dark"] {
+    color-scheme: light;
+  }
+
+  :root[data-theme="dark"] body,
+  :root[data-theme="dark"] .slip {
+    background: #fff !important;
+    color: #111 !important;
+  }
+}

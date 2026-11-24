@@ -1,6 +1,28 @@
 /* HR Portal front end — plain JavaScript, no build step. */
 'use strict';
 
+
+// ---------------- appearance / theme ----------------
+const getSavedTheme = () => {
+  try { return localStorage.getItem('riot-hrm-theme') || 'light'; } catch { return 'light'; }
+};
+function applyTheme(theme) {
+  const safeTheme = theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = safeTheme;
+  const toggle = document.getElementById('theme-toggle');
+  if (toggle) {
+    toggle.textContent = safeTheme === 'dark' ? '☀' : '☾';
+    toggle.title = safeTheme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
+    toggle.setAttribute('aria-label', toggle.title);
+  }
+}
+applyTheme(getSavedTheme());
+function toggleTheme() {
+  const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+  try { localStorage.setItem('riot-hrm-theme', next); } catch { /* preference storage may be unavailable */ }
+  applyTheme(next);
+}
+
 // ---------------- utilities ----------------
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -128,6 +150,8 @@ async function render() {
   const { parts } = parseHash();
   const key = parts[0] || '';
   app.innerHTML = shell(isHR, key);
+  applyTheme(getSavedTheme());
+  $('#theme-toggle')?.addEventListener('click', toggleTheme);
   $('.menu-btn')?.addEventListener('click', () => $('.side').classList.toggle('open'));
   $('#logout').onclick = async (e) => { e.preventDefault(); await POST('/api/logout'); state.me = null; location.hash = ''; render(); };
   const main = $('#main');
@@ -148,7 +172,7 @@ function shell(isHR, key) {
   return `<div class="shell">
     <nav class="side"><div class="brand">${esc(state.me.company)}</div><div class="role">${esc(state.me.name)} · ${isHR ? 'HR' : esc(state.me.employee?.emp_code || 'Employee')}</div>
       ${nav}<div class="sec"></div><a href="#" id="logout">Log out</a></nav>
-    <main class="main"><button class="btn sm menu-btn no-print" style="margin-bottom:12px">☰ Menu</button><div id="main"><div class="muted">Loading…</div></div></main>
+    <main class="main"><div class="app-toolbar no-print"><button class="btn sm menu-btn">☰ Menu</button><button type="button" class="theme-toggle" id="theme-toggle" title="Switch to dark mode" aria-label="Switch to dark mode">☾</button></div><div id="main"><div class="muted">Loading…</div></div></main>
   </div>`;
 }
 const header = (title, sub, actions = '') => `<div class="top"><div><h1>${esc(title)}</h1>${sub ? `<div class="sub">${sub}</div>` : ''}</div><div class="row">${actions}</div></div>`;
