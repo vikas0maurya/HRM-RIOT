@@ -242,6 +242,43 @@ function attendanceList(days, editable) {
       <td class="muted">${esc(d.punches.join(', '))}${d.source === 'manual' ? ' (edited)' : ''}</td><td>${esc(d.breaks.map((b) => `${b.start}–${b.end}`).join(', '))}</td>
       ${editable ? `<td><button class="btn sm" data-edit="${d.date}" data-in="${d.first_in || ''}" data-out="${d.last_out || ''}">Edit</button></td>` : ''}</tr>`));
 }
+
+function myAttendanceTable(days) {
+  const visibleDays = days.filter((d) => d.status !== '');
+  const rows = visibleDays.map((d) => {
+    const punches = Array.isArray(d.punches) ? d.punches : [];
+    const punchText = punches.length ? punches.join(' · ') : '—';
+    const source = d.source === 'manual' ? 'HR adjusted' : d.source === 'biometric' ? 'Biometric' : '—';
+    return `<tr data-att-row data-status="${esc(d.status)}">
+      <td>${fmtDate(d.date)} <span class="muted">${DOW[new Date(d.date + 'T00:00').getDay()]}</span></td>
+      <td>${d.status ? pill(d.status, d.label || d.status) : '—'}${d.late ? ' ' + pill('warn', 'Late') : ''}</td>
+      <td>${t12(d.first_in)}</td><td>${t12(d.last_out)}</td><td>${hm(d.minutes)}</td>
+      <td class="wrap">${esc(punchText)}</td><td>${esc(source)}</td>
+      <td class="wrap">${esc(d.note || '')}</td>
+    </tr>`;
+  });
+  return `<div class="tbl-wrap"><table id="my-attendance-table">
+    <thead><tr><th>Date</th><th>Status</th><th>First in</th><th>Last out</th><th>Working hours</th><th>Recorded punches</th><th>Source</th><th>HR note</th></tr></thead>
+    <tbody>${rows.length ? rows.join('') : '<tr><td colspan="8" class="empty">No attendance records for this month.</td></tr>'}</tbody>
+  </table></div>`;
+}
+function downloadAttendanceCsv(month, days) {
+  const columns = ['Date', 'Day', 'Status', 'First In', 'Last Out', 'Working Minutes', 'Punches', 'Source', 'HR Note'];
+  const lines = [columns, ...days.filter((d) => d.status !== '').map((d) => [
+    d.date, DOW[new Date(d.date + 'T00:00').getDay()], d.label || d.status,
+    d.first_in || '', d.last_out || '', d.minutes ?? '',
+    (Array.isArray(d.punches) ? d.punches.join(' | ') : ''),
+    d.source || '', d.note || ''
+  ])];
+  const csv = lines.map((row) => row.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\r\n');
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `RIOT-Attendance-${month}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+
 function leaveBalanceCards(bal) {
   return `<div class="grid g4" style="margin-bottom:16px">${bal.filter((b) => b.paid).map((b) => `<div class="stat"><div class="k">${esc(b.name)} (${esc(b.code)})</div><div class="v">${b.balance}</div><div class="s">Used ${b.used}${b.pending ? ` · ${b.pending} pending` : ''}</div></div>`).join('')}</div>`;
 }
@@ -364,34 +401,148 @@ const EMP_PAGES = {
   async attendance(el, { q }) {
     const month = q.month || thisMonth();
     const d = await GET(`/api/my/attendance?month=${month}`);
-    el.innerHTML = `${header('My attendance', `${fmtMonth(month)} · login and logout times from the biometric machine`, monthPicker(month, '#/attendance?'))}
-      ${attendanceSummary(d.summary)}<div class="card">${attendanceCalendar(d.days)}</div><div class="card">${attendanceList(d.days, false)}</div>
-      <p class="hint">See a wrong entry? Contact HR to correct it.</p>`;
+    const s = d.summary || {};
+    const rate = s.elapsed_working_days
+      ? Math.round(((Number(s.present || 0) + Number(s.half_day || 0) * 0.5) / s.elapsed_working_days) * 100)
+      : 0;
+    const missing = Number(s.missing_punch || 0);
+    const schedule = `<div class="riot-work-schedule">
+      <b>RIOT Ecommerce working schedule</b>
+      <div class="riot-schedule-chips">
+        <span class="schedule-chip active">1st Saturday · Working</span>
+        <span class="schedule-chip off">2nd Saturday · Off</span>
+        <span class="schedule-chip active">3rd Saturday · Working</span>
+        <span class="schedule-chip off">4th Saturday · Off</span>
+        <span class="schedule-chip active">5th Saturday · Working</span>
+      </div>
+      <div class="hint">Monday–Friday are working days. Every Sunday is weekly off. Company holidays are shown separately.</div>
+    </div>`;
+    el.innerHTML = `${header('My attendance', `${fmtMonth(month)} · your monthly attendance and punch history`,
+      `${monthPicker(month, '#/attendance?')}<button class="btn sm" id="export-my-attendance">Export CSV</button>`)}
+      <div class="grid g4 my-attendance-stats">
+        <div class="stat"><div class="k">Present</div><div class="v">${Number(s.present || 0)}</div><div class="s">Full working days</div></div>
+        <div class="stat"><div class="k">Absent</div><div class="v">${Number(s.absent || 0)}</div><div class="s">Scheduled days</div></div>
+        <div class="stat"><div class="k">Half days</div><div class="v">${Number(s.half_day || 0)}</div><div class="s">Partial attendance</div></div>
+        <div class="stat"><div class="k">Attendance rate</div><div class="v">${rate}%</div><div class="s">${Number(s.elapsed_working_days || 0)} elapsed working days</div></div>
+        <div class="stat"><div class="k">Late arrivals</div><div class="v">${Number(s.late || 0)}</div><div class="s">Based on configured shift</div></div>
+        <div class="stat"><div class="k">Missing punches</div><div class="v">${missing}</div><div class="s">Needs HR review</div></div>
+        <div class="stat"><div class="k">Approved leave</div><div class="v">${Number(s.leave || 0)}</div><div class="s">Leave days</div></div>
+        <div class="stat"><div class="k">Loss of pay</div><div class="v">${Number(s.lop || 0)}</div><div class="s">Calculated LOP days</div></div>
+      </div>
+      ${missing ? `<div class="note warn"><b>${missing} attendance day(s) have missing punches.</b> Please contact HR and share the affected date(s) for verification.</div>` : ''}
+      ${schedule}
+      <div class="card my-attendance-calendar-card">
+        <div class="row" style="justify-content:space-between;align-items:center"><h2>Monthly calendar</h2><span class="muted">${Number(s.scheduled_working_days || 0)} scheduled working days this month</span></div>
+        ${attendanceCalendar(d.days)}
+        <div class="attendance-legend">
+          <span>${pill('P', 'Present')}</span><span>${pill('A', 'Absent')}</span><span>${pill('HD', 'Half day')}</span>
+          <span>${pill('L', 'Leave')}</span><span>${pill('WO', 'Weekly off')}</span><span>${pill('H', 'Holiday')}</span><span>${pill('MP', 'Missing punch')}</span>
+        </div>
+      </div>
+      <div class="card">
+        <div class="row my-attendance-table-head">
+          <div><h2>Daily punch details</h2><p class="hint">Original punch times and the attendance source recorded by HRM.</p></div>
+          <div class="field my-attendance-filter"><label for="attendance-status-filter">Filter by status</label>
+            <select id="attendance-status-filter"><option value="">All statuses</option>
+              <option value="P">Present</option><option value="A">Absent</option><option value="HD">Half day</option>
+              <option value="L">Leave</option><option value="MP">Missing punch</option><option value="WO">Weekly off</option><option value="H">Holiday</option>
+            </select>
+          </div>
+        </div>
+        ${myAttendanceTable(d.days)}
+      </div>
+      <p class="hint">If a punch is missing or incorrect, contact HR with the date. Attendance corrections are controlled by HR to preserve an audit trail.</p>`;
+    $('#export-my-attendance', el).onclick = () => downloadAttendanceCsv(month, d.days);
+    $('#attendance-status-filter', el).onchange = (e) => {
+      const value = e.target.value;
+      $$('[data-att-row]', el).forEach((row) => { row.hidden = Boolean(value && row.dataset.status !== value); });
+    };
   },
 
   async leaves(el, { q }) {
     const d = await GET('/api/my/leaves');
     const tab = q.tab || 'requests';
-    el.innerHTML = `${header('Leaves', 'Your balance, requests and full leave ledger', '<button class="btn primary" id="apply">Apply leave</button>')}
-      ${leaveBalanceCards(d.balances)}${tabs([['requests', 'My requests'], ['ledger', 'Leave ledger']], tab, '#/leaves?tab=')}
-      <div class="card">${tab === 'ledger' ? leaveLedgerTable(d.ledger) : table(['Type', 'Dates', '#Days', 'Reason', 'Status', ''], leaveRequestRows(d.requests, false), 'No leave requests yet')}</div>`;
+    const requests = Array.isArray(d.requests) ? d.requests : [];
+    const balances = Array.isArray(d.balances) ? d.balances : [];
+    const ledger = Array.isArray(d.ledger) ? d.ledger : [];
+    const pendingCount = requests.filter((r) => r.status === 'pending').length;
+    const approvedCount = requests.filter((r) => r.status === 'approved').length;
+    const rejectedCount = requests.filter((r) => r.status === 'rejected').length;
+    const paidAvailable = balances.filter((b) => b.paid).reduce((n, b) => n + Math.max(0, Number(b.balance || 0) - Number(b.pending || 0)), 0);
+    const requestsView = `<div class="grid g3 leave-overview">
+      <div class="stat"><div class="k">Pending requests</div><div class="v">${pendingCount}</div><div class="s">Awaiting HR decision</div></div>
+      <div class="stat"><div class="k">Approved requests</div><div class="v">${approvedCount}</div><div class="s">Approved by HR</div></div>
+      <div class="stat"><div class="k">Rejected requests</div><div class="v">${rejectedCount}</div><div class="s">Review HR notes</div></div>
+    </div>
+    <div class="card">
+      <div class="row leave-filter-row">
+        <div><h2>My leave requests</h2><p class="hint">Track decisions and HR notes for every application.</p></div>
+        <div class="field"><label for="leave-status-filter">Filter status</label>
+          <select id="leave-status-filter"><option value="">All requests</option><option value="pending">Pending</option><option value="approved">Approved</option><option value="rejected">Rejected</option></select>
+        </div>
+      </div>
+      <div class="tbl-wrap"><table id="my-leave-requests">
+        <thead><tr><th>Leave type</th><th>Dates</th><th>Working days</th><th>Reason</th><th>Status / HR note</th><th>Action</th></tr></thead>
+        <tbody>${requests.length ? leaveRequestRows(requests, false).map((row, i) => row.replace('<tr>', `<tr data-leave-status="${esc(requests[i].status)}">`)).join('') : '<tr><td colspan="6" class="empty">No leave requests yet. Select Apply leave to create your first request.</td></tr>'}</tbody>
+      </table></div>
+    </div>`;
+    const calendarView = `<div class="card">
+      <h2>Leave calendar</h2>
+      <p class="hint">Approved and pending leave applications are shown below.</p>
+      <div class="leave-calendar-list">${requests.length ? [...requests].sort((a, b) => a.from_date.localeCompare(b.from_date)).map((r) => `<div class="leave-calendar-item">
+        <div class="leave-calendar-date"><b>${fmtDate(r.from_date)}</b>${r.to_date !== r.from_date ? `<span>to ${fmtDate(r.to_date)}</span>` : ''}</div>
+        <div class="leave-calendar-detail"><b>${esc(r.code)}</b><span>${Number(r.days)} working day(s)${r.half_day ? ' · Half day' : ''}</span></div>
+        <div>${pill(r.status)}${r.hr_note ? `<div class="muted">${esc(r.hr_note)}</div>` : ''}</div>
+      </div>`).join('') : '<div class="empty">No leave applications to display.</div>'}</div>
+    </div>`;
+    el.innerHTML = `${header('Leaves', 'Manage your leave balance, applications and history', '<button class="btn primary" id="apply">Apply leave</button>')}
+      <div class="grid g3 leave-overview">
+        <div class="stat"><div class="k">Available paid leave</div><div class="v">${paidAvailable}</div><div class="s">After pending requests</div></div>
+        <div class="stat"><div class="k">Pending requests</div><div class="v">${pendingCount}</div><div class="s">Awaiting HR decision</div></div>
+        <div class="stat"><div class="k">Approved requests</div><div class="v">${approvedCount}</div><div class="s">Recorded in your leave history</div></div>
+      </div>
+      <h2 class="section-title">Leave balances</h2>
+      ${leaveBalanceCards(balances)}
+      <div class="leave-policy-note">
+        <b>RIOT Ecommerce working-day policy</b>
+        <p>Monday–Friday: working. 1st, 3rd and 5th Saturdays: working. 2nd and 4th Saturdays and every Sunday: weekly off.</p>
+        <small>Company holidays are excluded from the final leave-day calculation. The server's calculated day count is authoritative.</small>
+      </div>
+      ${tabs([['requests', 'My requests'], ['calendar', 'Leave calendar'], ['ledger', 'Leave ledger']], tab, '#/leaves?tab=')}
+      ${tab === 'ledger' ? `<div class="card">${leaveLedgerTable(ledger)}</div>` : tab === 'calendar' ? calendarView : requestsView}`;
     const open = () => {
       const m = modal(`<h2>Apply for leave</h2><form id="f">
-        <div class="field"><label>Leave type</label><select name="leave_type_id" required>${d.types.map((t) => { const b = d.balances.find((x) => x.id === t.id); return `<option value="${t.id}">${esc(t.name)}${t.paid ? ` — ${b ? b.balance - b.pending : 0} available` : ' (unpaid)'}</option>`; }).join('')}</select></div>
+        <div class="field"><label>Leave type</label><select name="leave_type_id" required>${d.types.map((t) => { const b = balances.find((x) => x.id === t.id); return `<option value="${t.id}">${esc(t.name)}${t.paid ? ` — ${b ? Math.max(0, Number(b.balance) - Number(b.pending || 0)) : 0} available` : ' (unpaid)'}</option>`; }).join('')}</select></div>
         <div class="grid g2"><div class="field"><label>From</label><input type="date" name="from_date" required value="${todayStr()}"></div><div class="field"><label>To</label><input type="date" name="to_date" required value="${todayStr()}"></div></div>
         <label class="check field"><input type="checkbox" name="half_day"> Half day (single date only)</label>
-        <div class="field"><label>Reason</label><textarea name="reason" required></textarea></div>
-        <div class="hint">Weekly offs and holidays inside the range are not counted.</div>
-        <div class="actions"><button type="button" class="btn" onclick="closeModal()">Cancel</button><button class="btn primary" type="submit">Submit</button></div></form>`);
+        <div class="field"><label>Reason</label><textarea name="reason" required maxlength="1000" placeholder="Please explain why you need leave"></textarea></div>
+        <div class="note">Leave days are calculated using the RIOT working calendar: 1st, 3rd and 5th Saturdays are working; 2nd and 4th Saturdays and Sundays are weekly offs. Company holidays are excluded by HRM.</div>
+        <div class="actions"><button type="button" class="btn" onclick="closeModal()">Cancel</button><button class="btn primary" type="submit">Submit request</button></div></form>`);
       const f = $('#f', m);
       f.from_date.onchange = () => { if (f.to_date.value < f.from_date.value) f.to_date.value = f.from_date.value; };
-      onSubmit(f, async (data) => { const r = await POST('/api/my/leaves', data); closeModal(); toast(`Leave request sent (${r.days} day${r.days === 1 ? '' : 's'})`); go('#/leaves'); });
+      f.to_date.min = f.from_date.value;
+      f.half_day.onchange = () => { if (f.half_day.checked) f.to_date.value = f.from_date.value; };
+      f.from_date.onchange = () => { f.to_date.min = f.from_date.value; if (f.to_date.value < f.from_date.value || f.half_day.checked) f.to_date.value = f.from_date.value; };
+      onSubmit(f, async (data) => {
+        if (data.to_date < data.from_date) { toast('End date cannot be before start date', true); return; }
+        if (data.half_day && data.from_date !== data.to_date) { toast('Half-day leave must be for one date', true); return; }
+        const r = await POST('/api/my/leaves', data);
+        closeModal(); toast(`Leave request sent (${r.days} day${r.days === 1 ? '' : 's'})`); go('#/leaves');
+      });
     };
     $('#apply').onclick = open;
     if (q.new) open();
-    $$('[data-cancel-leave]', el).forEach((b) => (b.onclick = async () => { if (await confirmModal('Cancel this leave request?', 'Cancel request')) { await POST(`/api/my/leaves/${b.dataset.cancelLeave}/cancel`).catch((e) => toast(e.message, true)); render(); } }));
+    const statusFilter = $('#leave-status-filter', el);
+    if (statusFilter) statusFilter.onchange = () => {
+      $$('[data-leave-status]', el).forEach((row) => { row.hidden = Boolean(statusFilter.value && row.dataset.leaveStatus !== statusFilter.value); });
+    };
+    $$('[data-cancel-leave]', el).forEach((b) => (b.onclick = async () => {
+      if (await confirmModal('Cancel this leave request?', 'Cancel request')) {
+        await POST(`/api/my/leaves/${b.dataset.cancelLeave}/cancel`).catch((e) => toast(e.message, true));
+        render();
+      }
+    }));
   },
-
   async breaks(el, { q }) {
     const rows = await GET('/api/my/breaks');
     el.innerHTML = `${header('Break requests', 'Ask permission to step out during working hours', '<button class="btn primary" id="new">Request break</button>')}
